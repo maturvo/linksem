@@ -1,0 +1,66 @@
+open import Num
+
+open import Error
+
+open import Abi_utilities
+
+open import Elf_types_native_uint
+open import Elf_symbol_table
+
+(* TODO *)
+type binary_operation
+  = Add
+  | Sub
+
+(* TODO *)
+type symbolic_expression
+  = Section of elf64_half
+  | Const of integer
+  | BinOp of (symbolic_expression * binary_operation * symbolic_expression)
+  | AssertRange of (symbolic_expression * integer * integer)
+  | Mask of (symbolic_expression * natural * natural)
+
+let section_with_offset sidx offset = BinOp(Section sidx, Add, Const (integerFromNatural (natural_of_elf64_addr offset)))
+
+type relocation_description 'res 'tar =
+  <| rel_desc_operation : (relocation_operator_expression 'res * integer_bit_width * can_fail 'res)
+   ; rel_desc_mask      : (natural * natural)
+   ; rel_desc_target    : 'tar
+   |>
+
+type abstract_relocation 'a =
+  <| arel_value  : symbolic_expression
+   ; arel_target : 'a
+   |>
+   
+
+let rec eval_op_exp op: error symbolic_expression =
+  match op with
+    | Lift x -> return x
+    | Plus (x, y) ->
+        eval_op_exp x >>= fun a ->
+        eval_op_exp y >>= fun b ->
+        return (BinOp (a, Add, b))
+    | Minus (x, y) ->
+        eval_op_exp x >>= fun a ->
+        eval_op_exp y >>= fun b ->
+        return (BinOp (a, Sub, b))
+    | _ -> fail "Not supported"
+  end
+
+
+let eval_relocation desc =
+  let (exp, bit_width, can_fail) = desc.rel_desc_operation in
+  let (lo, hi) = desc.rel_desc_mask in
+  
+  eval_op_exp exp >>= fun value ->
+    match can_fail with
+    | CanFail -> return (AssertRange(value, 0, 0)) (*todo*)
+    | CannotFail -> return value
+    | CanFailOnTest -> fail "Not supported"
+    end
+  >>= fun value ->
+    return <| arel_value = Mask(value, lo, hi) ; arel_target = desc.rel_desc_target |>
+
+let symbolic_address_from_elf64_symbol_table_entry ste =
+  section_with_offset ste.elf64_st_shndx ste.elf64_st_value

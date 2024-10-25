@@ -1,0 +1,137 @@
+open import Missing_pervasives
+open import Error
+open import Maybe
+
+open import Num
+open import Basic_classes
+
+open import Elf_types_native_uint
+open import Elf_file
+open import Elf_header
+open import Elf_relocation
+
+open import Abi_aarch64_relocation
+open import Abi_utilities
+open import Abi_symbolic_relocation
+
+type aarch64_relocation_target
+  = Data64
+  | Data32
+  | ADRP
+  | ADD
+  | LDST
+  | CALL
+
+(* TODO fix sizes and stuff *)
+val abi_aarch64_apply_relocation_symbolic :
+  elf64_relocation_a -> symbolic_expression -> symbolic_expression -> elf64_file ->
+    error (Map.map elf64_addr (relocation_description symbolic_expression aarch64_relocation_target))
+let abi_aarch64_apply_relocation_symbolic rel s_val p_val ef =
+  if is_elf64_relocatable_file ef.elf64_file_header then
+    let (rel_type, _) = parse_elf64_relocation_info rel.elf64_ra_info in
+    let a_val = Const (integer_of_elf64_sxword rel.elf64_ra_addend) in
+      (** No width, no calculation *)
+      if rel_type = r_aarch64_none then
+        return Map.empty
+      (** No width, no calculation *)
+      else if rel_type = r_aarch64_withdrawn then
+        return Map.empty
+      (** Signed 64 bit width, calculation: S + A *)
+      else if rel_type = r_aarch64_abs64 then
+      	let result = Plus(Lift s_val, Lift a_val) in
+      	let addr   = rel.elf64_ra_offset in
+      	return (Map.singleton addr
+          <| rel_desc_operation = (result, I64, CannotFail)
+           ; rel_desc_mask = (63, 0)
+           ; rel_desc_target = Data64
+           |>
+        )
+      (** Signed 32 bit width, calculation: S + A *)
+      else if rel_type = r_aarch64_abs32 then
+      	let result = Plus(Lift s_val, Lift a_val) in
+      	let addr   = rel.elf64_ra_offset in
+      	return (Map.singleton addr
+          <| rel_desc_operation = (result, I32, CanFail)
+           ; rel_desc_mask = (31, 0)
+           ; rel_desc_target = Data32
+           |>
+        )
+      (** Signed 64 bit width, calculation: S + A - P *)
+      else if rel_type = r_aarch64_prel64 then
+      	let result = Minus(Plus(Lift s_val, Lift a_val), Lift p_val) in
+      	let addr   = rel.elf64_ra_offset in
+      	return (Map.singleton addr
+          <| rel_desc_operation = (result, I64, CannotFail)
+           ; rel_desc_mask = (63, 0)
+           ; rel_desc_target = Data64
+           |>
+        )
+      (** Signed 32 bit width, calculation: S + A - P *)
+      else if rel_type = r_aarch64_prel32 then
+      	let result = Minus(Plus(Lift s_val, Lift a_val), Lift p_val) in
+      	let addr   = rel.elf64_ra_offset in
+      	return (Map.singleton addr
+          <| rel_desc_operation = (result, I32, CanFail)
+           ; rel_desc_mask = (31, 0)
+           ; rel_desc_target = Data32
+           |>
+        )
+      else if rel_type = r_aarch64_adr_prel_pg_hi21 then
+      	let result = Minus(Apply(Page, Plus(Lift s_val, Lift a_val)), Apply(Page, Lift p_val)) in
+      	let addr   = rel.elf64_ra_offset in
+      	return (Map.singleton addr
+          <| rel_desc_operation = (result, I32, CanFail)
+           ; rel_desc_mask = (32, 12)
+           ; rel_desc_target = ADRP
+           |>
+        )
+      else if rel_type = r_aarch64_add_abs_lo12_nc then
+      	let result = Plus(Lift s_val, Lift a_val) in
+      	let addr   = rel.elf64_ra_offset in
+      	return (Map.singleton addr
+          <| rel_desc_operation = (result, I32, CannotFail)
+           ; rel_desc_mask = (11, 0)
+           ; rel_desc_target = ADD
+           |>
+        )
+      else if rel_type = r_aarch64_ldst32_abs_lo12_nc then
+      	let result = Plus(Lift s_val, Lift a_val) in
+      	let addr   = rel.elf64_ra_offset in
+      	return (Map.singleton addr
+          <| rel_desc_operation = (result, I32, CannotFail)
+           ; rel_desc_mask = (11, 2)
+           ; rel_desc_target = LDST
+           |>
+        )
+      else if rel_type = r_aarch64_ldst64_abs_lo12_nc then
+      	let result = Plus(Lift s_val, Lift a_val) in
+      	let addr   = rel.elf64_ra_offset in
+      	return (Map.singleton addr
+          <| rel_desc_operation = (result, I32, CannotFail)
+           ; rel_desc_mask = (11, 3)
+           ; rel_desc_target = LDST
+           |>
+        )
+      else if rel_type = r_aarch64_call26 then
+      	let result = Minus(Plus(Lift s_val, Lift a_val), Lift p_val) in
+      	let addr   = rel.elf64_ra_offset in
+      	return (Map.singleton addr
+          <| rel_desc_operation = (result, I27, CanFail)
+           ; rel_desc_mask = (27, 2)
+           ; rel_desc_target = CALL
+           |>
+        )
+      else
+        fail "Invalid AARCH64 relocation type"
+  else
+  	fail "abi_aarch64_apply_relocation: not a relocatable file"
+
+let abi_aarch64_relocation_to_abstract symtab sidx rel ef =
+  let p_val = section_with_offset sidx rel.elf64_ra_offset in
+  let (_, sym) = parse_elf64_relocation_info rel.elf64_ra_info in
+  match List.index symtab (unsafe_nat_of_natural sym) with
+    | Just ste -> return (symbolic_address_from_elf64_symbol_table_entry ste)
+    | Nothing -> fail "Invalid symbol table index"
+  end >>= fun s_val ->
+    abi_aarch64_apply_relocation_symbolic rel s_val p_val ef >>= fun rel_desc_map ->
+    map_mapM eval_relocation rel_desc_map

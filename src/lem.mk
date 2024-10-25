@@ -61,6 +61,7 @@ LEM_ELF_SRC := byte_sequence.lem byte_pattern.lem byte_pattern_extra.lem \
 LEM_ABI_SRC := \
 	abis/abi_classes.lem memory_image.lem memory_image_orderings.lem \
 	abis/abi_utilities.lem \
+	abis/abi_symbolic_relocation.lem \
 	gnu_extensions/gnu_ext_abi.lem \
 	abis/power64/abi_power64.lem \
 	abis/power64/abi_power64_elf_header.lem \
@@ -72,6 +73,7 @@ LEM_ABI_SRC := \
 	abis/aarch64/abi_aarch64_program_header_table.lem \
 	abis/aarch64/abi_aarch64_le_serialisation.lem \
 	abis/aarch64/abi_aarch64_relocation.lem \
+	abis/aarch64/abi_aarch64_symbolic_relocation.lem \
 	abis/aarch64/abi_aarch64_le.lem \
 	abstract_linker_script.lem \
 	abis/amd64/abi_amd64_elf_header.lem \
