@@ -56,6 +56,7 @@ LEM_ELF_SRC := byte_sequence.lem byte_pattern.lem byte_pattern_extra.lem \
 	elf_relocation.lem \
 	elf_interpreted_segment.lem elf_interpreted_section.lem \
 	elf_note.lem elf_file.lem elf_dynamic.lem \
+	elf_symbolic.lem \
 	dwarf_ctypes.lem dwarf.lem ldconfig.lem
 
 LEM_ABI_SRC := \

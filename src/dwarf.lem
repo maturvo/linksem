@@ -27,7 +27,7 @@ open import Elf_relocation
 open import Elf_section_header_table
 open import Elf_symbol_table
 open import Elf_types_native_uint
-
+open import Elf_symbolic
 
 (** ***************** experimental DWARF reading *********** *)
  
@@ -226,6 +226,17 @@ let sym_natural_of_byte x = Absolute(natural_of_byte x)
 let symNaturalPow x y = sym_map (fun x -> naturalPow x y) x
 
 let symNaturalFromInteger x = Absolute(naturalFromInteger x)
+
+(* byte sequence *)
+
+type next_reloc =
+  | NoReloc of natural
+  | Reloc of abstract_relocation reloc_target_data
+
+type rel_byte_sequence =
+  <| rbs_bytes  : byte_sequence
+   ; rbs_relocs : list next_reloc
+   |>
 
 (** ************************************************************ *)
 (** **  dwarf representation types  **************************** *)

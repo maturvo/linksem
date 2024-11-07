@@ -9,6 +9,7 @@ open import Elf_types_native_uint
 open import Elf_file
 open import Elf_header
 open import Elf_relocation
+open import Elf_symbolic
 
 open import Abi_aarch64_relocation
 open import Abi_utilities

@@ -1,0 +1,26 @@
+open import Num
+open import Elf_types_native_uint
+
+(* TODO *)
+type binary_operation
+  = Add
+  | Sub
+
+(* TODO *)
+type symbolic_expression
+  = Section of elf64_half
+  | Const of integer
+  | BinOp of (symbolic_expression * binary_operation * symbolic_expression)
+  | AssertRange of (symbolic_expression * integer * integer)
+  | Mask of (symbolic_expression * natural * natural)
+
+let section_with_offset sidx offset = BinOp(Section sidx, Add, Const (integerFromNatural (natural_of_elf64_addr offset)))
+
+type abstract_relocation 'a =
+  <| arel_value  : symbolic_expression
+   ; arel_target : 'a
+   |>
+
+type reloc_target_data =
+  | Data32
+  | Data64
