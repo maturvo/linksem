@@ -24,3 +24,8 @@ type abstract_relocation 'a =
 type reloc_target_data =
   | Data32
   | Data64
+
+let reloc_width_bytes : reloc_target_data -> natural = function
+  | Data32 -> 4
+  | Data64 -> 8
+end
