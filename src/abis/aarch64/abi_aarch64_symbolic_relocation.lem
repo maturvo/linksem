@@ -127,7 +127,7 @@ let abi_aarch64_apply_relocation_symbolic rel s_val p_val ef =
   else
   	fail "abi_aarch64_apply_relocation: not a relocatable file"
 
-let abi_aarch64_relocation_to_abstract symtab sidx rel ef =
+let abi_aarch64_relocation_to_abstract ef symtab sidx rel =
   let p_val = section_with_offset sidx rel.elf64_ra_offset in
   let (_, sym) = parse_elf64_relocation_info rel.elf64_ra_info in
   match List.index symtab (unsafe_nat_of_natural sym) with
@@ -136,3 +136,9 @@ let abi_aarch64_relocation_to_abstract symtab sidx rel ef =
   end >>= fun s_val ->
     abi_aarch64_apply_relocation_symbolic rel s_val p_val ef >>= fun rel_desc_map ->
     map_mapM eval_relocation rel_desc_map
+
+let aarch64_relocation_target_to_data_target = function
+  | Data32 -> return Elf_symbolic.Data32
+  | Data64 -> return Elf_symbolic.Data64
+  | _ -> fail "Not a data relocation"
+end

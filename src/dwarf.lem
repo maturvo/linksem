@@ -237,6 +237,15 @@ type rel_byte_sequence =
   <| rbs_bytes  : byte_sequence
    ; rbs_relocs : list next_reloc
    |>
+  
+type read_result 'a =
+  | ReadValue of 'a
+  | ReadReloc of abstract_relocation reloc_target_data
+
+let read_result_unwrap = function
+  | ReadValue x -> x
+  | ReadReloc _ -> Assert_extra.failwith "read_result_unwrap"
+end
 
 let rbs_no_reloc (bs : byte_sequence) : rel_byte_sequence =
   <| rbs_bytes = bs
@@ -250,12 +259,65 @@ end
 
 let rel_byte_sequence_of_byte_list l = rbs_no_reloc (byte_sequence_of_byte_list l)
 
-let rel_read_char bs =
+let pad_no_reloc n rels =
+  if n = 0 then
+    rels
+  else match rels with
+  | NoReloc m :: rels -> NoReloc (n+m) :: rels
+  | _ -> NoReloc n :: rels
+end
+
+let rbs_read_char bs =
   match bs.rbs_relocs with
   | NoReloc n :: rels ->
     read_char bs.rbs_bytes >>= fun (c,bs') ->
-      return (c, <| rbs_bytes = bs' ; rbs_relocs = if n = 1 then rels else NoReloc (n-1) :: rels |>)
-  | _ -> fail "rel_read_char: has reloaction"
+      return (c, <| rbs_bytes = bs' ; rbs_relocs = pad_no_reloc (n-1) rels |>)
+  | _ -> fail "rbs_read_char: has reloaction"
+  end
+
+let rbs_read_2_bytes_be bs =
+  match bs.rbs_relocs with
+  | NoReloc n :: rels ->
+    if n < 2 then
+      fail "rbs_read_2_bytes_be: has reloaction"
+    else
+      read_2_bytes_be bs.rbs_bytes >>= fun (b2,bs') ->
+        return (b2, <| rbs_bytes = bs' ; rbs_relocs = pad_no_reloc (n-2) rels |>)
+  | _ -> fail "rbs_read_2_bytes_be: has reloaction"
+  end
+
+let rbs_read_4_bytes_be bs =
+  match bs.rbs_relocs with
+  | NoReloc n :: rels ->
+    if n < 4 then
+      fail "rbs_read_4_bytes_be: has misaligned reloaction"
+    else
+      read_4_bytes_be bs.rbs_bytes >>= fun (b4,bs') ->
+        return (ReadValue b4, <| rbs_bytes = bs' ; rbs_relocs = pad_no_reloc (n-4) rels |>)
+  | Reloc rel :: rels ->
+    if reloc_width_bytes rel.arel_target <> 4 then
+      fail "rbs_read_4_bytes_be: has misaligned reloaction"
+    else
+      dropbytes 4 bs.rbs_bytes >>= fun bs' ->
+        return (ReadReloc rel, <| rbs_bytes = bs' ; rbs_relocs = rels |>)
+  | _ -> fail "rbs_read_4_bytes_be: has misaligned reloaction"
+  end
+
+let rbs_read_8_bytes_be bs =
+  match bs.rbs_relocs with
+  | NoReloc n :: rels ->
+    if n < 8 then
+      fail "rbs_read_8_bytes_be: has misaligned reloaction"
+    else
+      read_8_bytes_be bs.rbs_bytes >>= fun (b8,bs') ->
+        return (ReadValue b8, <| rbs_bytes = bs' ; rbs_relocs = pad_no_reloc (n-8) rels |>)
+  | Reloc rel :: rels ->
+    if reloc_width_bytes rel.arel_target <> 8 then
+      fail "rbs_read_8_bytes_be: has misaligned reloaction"
+    else
+      dropbytes 8 bs.rbs_bytes >>= fun bs' ->
+        return (ReadReloc rel, <| rbs_bytes = bs' ; rbs_relocs = rels |>)
+  | _ -> fail "rbs_read_8_bytes_be: has misaligned reloaction"
   end
 
 let rbs_length rbs = Byte_sequence.length rbs.rbs_bytes
@@ -263,10 +325,10 @@ let rbs_length rbs = Byte_sequence.length rbs.rbs_bytes
 let rec reloc_list_partition n relocs = match (n, relocs) with
   | (0, relocs) -> return ([], relocs)
   | (n, NoReloc m :: relocs) -> if m > n then
-      return ([NoReloc n], NoReloc (m - n) :: relocs)
+      return ([NoReloc n], pad_no_reloc (m - n) relocs)
     else
       reloc_list_partition (n-m) relocs >>= fun (a, b) ->
-      return (NoReloc m :: a, b)
+      return (pad_no_reloc m a, b)
   | (n, Reloc r :: relocs) ->
     let m = reloc_width_bytes r.arel_target in
     if m > n then
@@ -282,8 +344,29 @@ let rbs_partition n rbs =
   reloc_list_partition n rbs.rbs_relocs >>= fun (r1, r2) ->
   return (<| rbs_bytes = bs1 ; rbs_relocs = r1 |>, <| rbs_bytes = bs2 ; rbs_relocs = r2 |>)
 
-let byte_list_of_rel_byte_sequence bs = 
-  byte_list_of_byte_sequence (rbs_unwrap bs)
+let rbs_takebytes n rbs =
+  rbs_partition n rbs >>= fun(x,_) -> return x
+    
+let rbs_dropbytes n rbs =
+  rbs_partition n rbs >>= fun(_,x) -> return x
+
+let rbs_find_byte rbs b =
+  Maybe.bind (find_byte rbs.rbs_bytes b) (fun n ->
+    let errmsg = "rbs_find_byte: relocations before byte found" in
+    match rbs.rbs_relocs with
+    | NoReloc m :: _ -> if m >= n then Just n else Assert_extra.failwith errmsg
+    | _ -> Assert_extra.failwith errmsg
+  end)
+
+let byte_list_of_rel_byte_sequence rbs = 
+  byte_list_of_byte_sequence (rbs_unwrap rbs)
+
+let string_of_rel_byte_sequence rbs =
+  string_of_byte_sequence (rbs_unwrap rbs)
+
+instance (Show rel_byte_sequence)
+  let show = string_of_rel_byte_sequence
+end
 
 (** ************************************************************ *)
 (** **  dwarf representation types  **************************** *)
@@ -1611,13 +1694,13 @@ let bytes_of_natural en size n =
 let bytes_of_sym_natural en size n = bytes_of_natural en (sym_unwrap size) (sym_unwrap n)
 
 let rec natural_of_bytes_little bs : natural =
-  match rel_read_char bs with
+  match rbs_read_char bs with
   | Fail _ -> 0
   | Success (b, bs') -> natural_of_byte b + 256 * natural_of_bytes_little bs'
   end
 
 let rec natural_of_bytes_big acc bs =
-  match rel_read_char bs with
+  match rbs_read_char bs with
   | Fail _ -> acc
   | Success (b, bs') -> natural_of_bytes_big (natural_of_byte b + 256 * acc) bs'
 end
@@ -1712,7 +1795,7 @@ let pphex_integer n = if n<0 then "-" ^ pphex (abs n) else pphex (abs n)
 let ppbytes bs = show (List.map (fun x -> show x) (byte_list_of_rel_byte_sequence bs))
 
 let rec ppbytes2 n bs =
-  match rel_read_char bs with
+  match rbs_read_char bs with
     | Fail _ -> ""
     | Success (x,xs') -> "<" ^ pphex n ^ ">  " ^ show x ^ "\n" ^ ppbytes2 (n+1) xs'
   end
@@ -2017,7 +2100,7 @@ let parse_restrict_length n p =
 
 let parse_byte : parser(byte) =
   fun (pc:parse_context) ->
-    match rel_read_char pc.pc_bytes with
+    match rbs_read_char pc.pc_bytes with
     | Fail _ -> PR_fail "parse_byte" pc
     | Success (b,bs) -> PR_success b (<|pc_bytes=bs; pc_offset= pc.pc_offset + 1 |> )
     end
@@ -2034,7 +2117,7 @@ let bzero = byte_of_natural 0
 
 let parse_string : parser (rel_byte_sequence) =
   fun (pc:parse_context) ->
-    match find_byte pc.pc_bytes bzero with
+    match rbs_find_byte pc.pc_bytes bzero with
       | Nothing -> PR_fail "parse_string" pc
       | Just n ->
           pr_bind (parse_n_bytes (Absolute n) pc) (fun res pc -> (*todo find byte should respect relocs*)
@@ -2056,7 +2139,7 @@ let parse_non_empty_string : parser (maybe rel_byte_sequence) =
 let parse_uint8 : parser sym_natural=
   fun (pc:parse_context) ->
     let _ = my_debug "uint8 " in
-    match rel_read_char pc.pc_bytes with
+    match rbs_read_char pc.pc_bytes with
       | Success (b, bytes) ->
           let v = natural_of_byte b in
           PR_success (Absolute v) (<| pc_bytes = bytes; pc_offset = pc.pc_offset + 1 |>)
@@ -2073,7 +2156,7 @@ let parse_uint8_constant (v:sym_natural) : parser sym_natural=
 let parse_uint16 c : parser sym_natural=
     fun (pc:parse_context) ->
       let _ = my_debug "uint16 " in
-      match read_2_bytes_be pc.pc_bytes with
+      match rbs_read_2_bytes_be pc.pc_bytes with
       | Success ((b0,b1),bytes') ->
           let v = if c.endianness=Little then
             natural_of_byte b0 + 256*natural_of_byte b1
@@ -2087,8 +2170,8 @@ let parse_uint16 c : parser sym_natural=
 let parse_uint32 c : parser sym_natural=
     fun (pc:parse_context) ->
       let _ = my_debug "uint32 " in
-      match read_4_bytes_be pc.pc_bytes with
-      | Success ((b0,b1,b2,b3),bytes') ->
+      match rbs_read_4_bytes_be pc.pc_bytes with
+      | Success (ReadValue (b0,b1,b2,b3),bytes') -> (*TODO*)
           let v = if c.endianness=Little then
             natural_of_byte b0 + 256*natural_of_byte b1 + 256*256*natural_of_byte b2 + 256*256*256*natural_of_byte b3
           else
@@ -2101,8 +2184,8 @@ let parse_uint32 c : parser sym_natural=
 let parse_uint64 c : parser sym_natural=
     fun (pc:parse_context) ->
       let _ = my_debug "uint64 " in
-      match read_8_bytes_be pc.pc_bytes with
-      | Success ((b0,b1,b2,b3,b4,b5,b6,b7),bytes') ->
+      match rbs_read_8_bytes_be pc.pc_bytes with
+      | Success (ReadValue (b0,b1,b2,b3,b4,b5,b6,b7),bytes') -> (*TODO*)
           let v = if c.endianness=Little then
             natural_of_byte b0 + 256*natural_of_byte b1 + 256*256*natural_of_byte b2 + 256*256*256*natural_of_byte b3
               + (256*256*256*256*(natural_of_byte b4 + 256*natural_of_byte b5 + 256*256*natural_of_byte b6 + 256*256*256*natural_of_byte b7))
@@ -2140,7 +2223,7 @@ let parse_sint64 c : parser integer =
 let rec parse_ULEB128' (acc: natural) (shift_factor: natural) : parser natural =
     fun (pc:parse_context) ->
       let _ = my_debug "ULEB128' " in
-      match rel_read_char pc.pc_bytes with
+      match rbs_read_char pc.pc_bytes with
       | Success (b,bytes') ->
           let n = natural_of_byte b in
           let acc' = (natural_land n 127) * shift_factor + acc in
@@ -2161,7 +2244,7 @@ let parse_ULEB128 : parser sym_natural =
 let rec parse_SLEB128' (acc: natural) (shift_factor: natural) : parser (bool * natural * natural) =
     fun (pc:parse_context) ->
       let _ = my_debug "SLEB128' " in
-      match rel_read_char pc.pc_bytes with
+      match rbs_read_char pc.pc_bytes with
       | Success (b,bytes') ->
           let n = natural_of_byte b in
           let acc' = acc + (natural_land n 127) * shift_factor in
@@ -2291,9 +2374,9 @@ let parse_abbreviations_table c =
 (** debug_str entry *)
 
 let rec null_terminated_bs (bs: rel_byte_sequence) : rel_byte_sequence =
-  match find_byte bs bzero with
+  match rbs_find_byte bs bzero with
   | Just i ->
-      match takebytes i bs with
+      match rbs_takebytes i bs with
         | Success bs' -> bs'
         | Fail _ -> Assert_extra.failwith "find_byte or take_byte is broken"
       end
@@ -2301,7 +2384,7 @@ let rec null_terminated_bs (bs: rel_byte_sequence) : rel_byte_sequence =
   end
 
 let pp_debug_str_entry (str: rel_byte_sequence) (n: sym_natural) : string =
-  match dropbytes (sym_unwrap n) str with
+  match rbs_dropbytes (sym_unwrap n) str with
   | Fail _ -> "strp beyond .debug_str extent"
   | Success bs -> string_of_rel_byte_sequence (null_terminated_bs bs)
   end
@@ -3074,7 +3157,7 @@ let _ = my_debug4 (pp_compilation_unit_header cuh) in
 
       if cuh.cuh_unit_length = 0 then PR_success Nothing pc' else
       
-      let pc_abbrev = <|pc_bytes = match dropbytes (sym_unwrap cuh.cuh_debug_abbrev_offset) debug_abbrev_section_body with Success bs -> bs | Fail _ -> Assert_extra.failwith "mydrop of debug_abbrev" end; pc_offset = sym_unwrap cuh.cuh_debug_abbrev_offset  |> in
+      let pc_abbrev = <|pc_bytes = match rbs_dropbytes (sym_unwrap cuh.cuh_debug_abbrev_offset) debug_abbrev_section_body with Success bs -> bs | Fail _ -> Assert_extra.failwith "mydrop of debug_abbrev" end; pc_offset = sym_unwrap cuh.cuh_debug_abbrev_offset  |> in
 
       (* todo: this is reparsing the abbreviations table for each cu *)
       let abbreviations_table =
@@ -3134,7 +3217,7 @@ let parse_type_unit c (debug_str_section_body: rel_byte_sequence) (debug_abbrev_
 
       (* let _ = my_debug4 (pp_type_unit_header tuh) in *)
 
-      let pc_abbrev = let n = tuh.tuh_cuh.cuh_debug_abbrev_offset in <|pc_bytes = match dropbytes (sym_unwrap n) debug_abbrev_section_body with Success bs -> bs | Fail _ -> Assert_extra.failwith "mydrop of debug_abbrev" end; pc_offset = sym_unwrap n  |> in
+      let pc_abbrev = let n = tuh.tuh_cuh.cuh_debug_abbrev_offset in <|pc_bytes = match rbs_dropbytes (sym_unwrap n) debug_abbrev_section_body with Success bs -> bs | Fail _ -> Assert_extra.failwith "mydrop of debug_abbrev" end; pc_offset = sym_unwrap n  |> in
 
       let abbreviations_table =
         match parse_abbreviations_table c pc_abbrev with
@@ -3500,7 +3583,7 @@ let parser_of_call_frame_argument_type c cuh (cfat: call_frame_argument_type) : 
 
 let parse_call_frame_instruction c cuh : parser (maybe call_frame_instruction) =
     fun pc ->
-      match rel_read_char pc.pc_bytes with
+      match rbs_read_char pc.pc_bytes with
       | Fail _ -> PR_success Nothing pc
       | Success (b,bs') ->
           let pc' = <| pc_bytes = bs'; pc_offset = pc.pc_offset + 1 |> in
@@ -4026,7 +4109,7 @@ let pp_ufe_brief (((mcomp_dir,mdir,file) as ufe) : unpacked_file_entry) : string
 let parse_line_number_info c str (d_line: rel_byte_sequence) (cu: compilation_unit) : line_number_program =
   let comp_dir = find_string_attribute_value_of_die "DW_AT_comp_dir" str cu.cu_die in
   let f n =
-    let d_line' = match dropbytes n d_line with Success xs -> xs | Fail _ -> Assert_extra.failwith "parse_line_number_info drop" end in
+    let d_line' = match rbs_dropbytes n d_line with Success xs -> xs | Fail _ -> Assert_extra.failwith "parse_line_number_info drop" end in
     let pc = <| pc_bytes = d_line'; pc_offset = n|> in
     match parse_line_number_program c cu.cu_header comp_dir pc with
     | PR_success lnp pc' ->
@@ -4149,8 +4232,9 @@ let parse_dwarf c
    d_line_info = li;
   |>
 
-val extract_section_body : elf_file -> string -> bool -> p_context * sym_natural * rel_byte_sequence
-let extract_section_body (f:elf_file) (section_name:string) (strict: bool) =
+(* TODO *)
+val extract_section_body' : elf_file -> string -> bool -> p_context * sym_natural * byte_sequence
+let extract_section_body' (f:elf_file) (section_name:string) (strict: bool) =
   let (en: Endianness.endianness) =
     match f with
     | ELF_File_32 f32 -> Elf_header.get_elf32_header_endianness f32.Elf_file.elf32_file_header
@@ -4199,6 +4283,10 @@ let extract_section_body (f:elf_file) (section_name:string) (strict: bool) =
       | _ -> Assert_extra.failwith ("multiple " ^ section_name ^ " sections present")
       end
   end
+
+val extract_section_body : elf_file -> string -> bool -> p_context * sym_natural * rel_byte_sequence
+let extract_section_body (f:elf_file) (section_name:string) (strict: bool) =
+  let (c,n,bs) = extract_section_body' f section_name strict in (c,n,rbs_no_reloc bs)
 
 val extract_dwarf : elf_file -> maybe dwarf
 let extract_dwarf f =
@@ -6584,8 +6672,8 @@ let pp_inlined_subroutines_by_range ds iss =
 
 
 let rec words_of_rel_byte_sequence (addr:sym_natural) (bs:rel_byte_sequence) (acc:list (sym_natural * sym_natural)) : list (sym_natural * sym_natural) =
-  match read_4_bytes_be bs with
-  | Success ((b0,b1,b2,b3), bs') ->
+  match rbs_read_4_bytes_be bs with
+  | Success (ReadValue (b0,b1,b2,b3), bs') -> (*TODO*)
      let i : sym_natural = Absolute (natural_of_byte b0 + 256*natural_of_byte b1 + 65536*natural_of_byte b2 + 65536*256*natural_of_byte b3) in
      words_of_rel_byte_sequence (addr+4) bs' ((addr,i)::acc)
   | Fail _ -> List.reverse acc

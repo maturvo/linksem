@@ -1,5 +1,16 @@
+open import Basic_classes
 open import Num
+open import Error
+open import Byte_sequence
+open import Bool
+
+
 open import Elf_types_native_uint
+open import Elf_relocation
+open import Elf_symbol_table
+open import Elf_file
+open import Elf_header
+open import Elf_section_header_table
 
 (* TODO *)
 type binary_operation
@@ -28,4 +39,32 @@ type reloc_target_data =
 let reloc_width_bytes : reloc_target_data -> natural = function
   | Data32 -> 4
   | Data64 -> 8
+end
+
+type relocation_interpreter 'a = elf64_file -> elf64_symbol_table -> elf64_half -> elf64_relocation_a -> error (Map.map elf64_addr (abstract_relocation 'a))
+
+val extract_elf64_relocations_for_section : forall 'a. elf64_file -> relocation_interpreter 'a -> elf64_half -> byte_sequence -> error (Map.map elf64_addr (abstract_relocation 'a))
+let extract_elf64_relocations_for_section f1 interp sidx bs0 =
+  let hdr       = f1.elf64_file_header in
+  let sht       = f1.elf64_file_section_header_table in
+  let endian    = get_elf64_header_endianness hdr in
+  let cond x =
+    (x.elf64_sh_type = elf64_word_of_natural sht_rela) && (natural_of_elf64_word x.elf64_sh_info = natural_of_elf64_half sidx)
+  in
+  match List.filter cond sht with
+  | [] -> return Map.empty
+  | [rel_sec] ->
+    let off = natural_of_elf64_off  rel_sec.elf64_sh_offset in
+    let siz = natural_of_elf64_xword rel_sec.elf64_sh_size in
+    let lnk = natural_of_elf64_word rel_sec.elf64_sh_link in
+    Byte_sequence.offset_and_cut off siz bs0 >>= fun rels ->
+    Elf_relocation.read_elf64_relocation_a_section' endian rels >>= fun rels ->
+    Elf_file.get_elf64_symbol_table_by_index f1 lnk >>= fun symtab ->
+    mapM (interp f1 symtab sidx) rels >>= fun rel_maps ->
+    let rel_map = Map.unions rel_maps in
+    if Map.size rel_map <> List.length rels then
+      fail "Multiple relocations at the same location"
+    else
+      return rel_map
+  | _ -> fail "Multiple relocation sections for this section"
 end
