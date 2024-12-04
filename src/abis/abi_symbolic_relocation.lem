@@ -45,5 +45,3 @@ let eval_relocation desc =
   >>= fun value ->
     return <| arel_value = Mask(value, lo, hi) ; arel_target = desc.rel_desc_target |>
 
-let symbolic_address_from_elf64_symbol_table_entry ste =
-  section_with_offset ste.elf64_st_shndx ste.elf64_st_value

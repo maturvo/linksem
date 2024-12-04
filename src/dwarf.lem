@@ -131,13 +131,36 @@ let my_debug3 s = () (*print_endline s*)
 let my_debug4 s = print_endline s
 let my_debug5 s = print_endline s
 
+(** ************************************************************ *)
+(** **  missing pervasives  ************************************ *)
+(** ************************************************************ *)
+
+(* sym_natural version of List.index *)
+val index_natural : forall 'a. list 'a -> natural -> maybe 'a
+let rec index_natural l n = match l with
+  | []      -> Nothing
+  | x :: xs -> if n = 0 then Just x else index_natural xs (n-1)
+end
+
+let partialNaturalFromInteger (i:integer) : natural =
+ if i<0 then Assert_extra.failwith "partialNaturalFromInteger" else naturalFromInteger i
+
+val natural_nat_shift_left : natural -> nat -> natural
+declare ocaml    target_rep function natural_nat_shift_left = `Nat_big_num.shift_left`
+
+val natural_nat_shift_right : natural -> nat -> natural
+declare ocaml    target_rep function natural_nat_shift_right = `Nat_big_num.shift_right`
 
 (* Symbolic types *)
-type sym_natural = 
-  | Offset of (string * natural)
-  | Absolute of natural
+type sym 'a = 
+  | Offset of (string * 'a)
+  | Absolute of 'a
   | Unknown
 
+type sym_natural = sym natural 
+type sym_integer = sym integer
+
+val sym_add : forall 'a. NumAdd 'a => (sym 'a -> sym 'a -> sym 'a)
 let sym_add x y=
   match (x, y) with
     | (Absolute x, Absolute y) -> Absolute (x + y)
@@ -146,7 +169,7 @@ let sym_add x y=
     | _ -> Unknown
   end
 
-val sym_bind : sym_natural -> (natural -> sym_natural) -> sym_natural
+val sym_bind : forall 'a. sym 'a -> ('a -> sym 'a) -> sym 'a
 let sym_bind x f = match x with
   | Absolute x -> f x
   | _ -> Unknown
@@ -156,41 +179,19 @@ let sym_map f x = sym_bind x (fun x -> Absolute(f x))
 
 let sym_map2 f x y = sym_bind x (fun x -> sym_map (f x) y)
 
-let sym_unwrap = function
+(* TODO add everywhere or handle differently *)
+let simplify = function
+  | Offset (s, x) -> match toCharList s with
+    | #'.'::#'d'::#'e'::#'b'::#'u'::#'g'::_ -> Absolute x (* HACK should be lookup in context *)
+    | _ -> Offset (s, x)
+  end
+  | x -> x
+end
+
+let sym_unwrap sym_val ctx = match simplify sym_val with
   | Absolute x -> x
-  | _ -> Assert_extra.failwith "sym_unwrap"
-end
-
-instance (NumAdd sym_natural)
-  let (+) =  sym_add
-end
-
-instance (NumMinus sym_natural)
-  let (-) = sym_map2 (-)
-end
-
-instance (NumMult sym_natural)
-  let ( * ) = sym_map2 ( * )
-end
-
-instance (NumDivision sym_natural)
-  let (/) = sym_map2 (/)
-end
-
-instance (NumRemainder sym_natural)
-  let (mod) = sym_map2 (mod)
-end
-
-instance (Ord sym_natural)
-  let compare = (fun x -> fun y -> compare (sym_unwrap x) (sym_unwrap y))
-  let (<) = (fun x -> fun y -> (sym_unwrap x) < (sym_unwrap y))
-  let (<=) = (fun x -> fun y -> (sym_unwrap x) <= (sym_unwrap y))
-  let (>) = (fun x -> fun y -> (sym_unwrap x) > (sym_unwrap y))
-  let (>=) = (fun x -> fun y -> (sym_unwrap x) >= (sym_unwrap y))
-end
-
-instance (Numeral sym_natural)
-  let fromNumeral = fun x -> Absolute (fromNumeral x)
+  | Offset (s, x) -> Assert_extra.failwith ("sym_unwrap (Offset from " ^ s ^ ") in " ^ ctx)
+  | Unknown -> Assert_extra.failwith ("sym_unwrap Unknown in " ^ ctx)
 end
 
 let pp_sym ppf = function
@@ -199,8 +200,94 @@ let pp_sym ppf = function
 | Unknown -> "Unknown"
 end
 
-instance (Show sym_natural)
+instance forall 'a. Show 'a => (Show (sym 'a))
   let show = pp_sym show
+end
+
+instance forall 'a. NumAdd 'a => (NumAdd (sym 'a))
+  let (+) =  sym_add
+end
+
+instance forall 'a. NumMinus 'a => (NumMinus (sym 'a))
+  let (-) = sym_map2 (-)
+end
+
+instance forall 'a. NumMult 'a => (NumMult (sym 'a))
+  let ( * ) = sym_map2 ( * )
+end
+
+instance forall 'a. NumDivision 'a => (NumDivision (sym 'a))
+  let (/) = sym_map2 (/)
+end
+
+instance forall 'a. NumRemainder 'a => (NumRemainder (sym 'a))
+  let (mod) = sym_map2 (mod)
+end
+
+let sym_comp f a b = match (simplify a, simplify b) with
+  | (Absolute a, Absolute b) -> f a b
+  | (Offset (s, a), Offset(t, b)) -> if s = t then
+      f a b
+    else
+      Assert_extra.failwith ("offsets of different sections " ^ s ^ " and " ^ t)
+  | _ -> Assert_extra.failwith "sym_comp" (* TODO should probably figure out better errors*)
+end
+
+instance forall 'a. Ord 'a => (Ord (sym 'a))
+  let compare = sym_comp compare
+  let (<) = sym_comp (<)
+  let (<=) = sym_comp (<=)
+  let (>) = sym_comp (>)
+  let (>=) = sym_comp (>=)
+end
+
+(* instance forall 'a. Ord 'a, Show 'a => (Ord (sym 'a))
+  let compare = (fun x -> fun y -> compare (sym_unwrap x ((show x) ^ "compare" ^ (show y))) (sym_unwrap y ((show x) ^ "compare" ^ (show y))))
+  let (<) = (fun x -> fun y -> (sym_unwrap x ((show x) ^ "<" ^ (show y))) < (sym_unwrap y ((show x) ^ "<" ^ (show y))))
+  let (<=) = (fun x -> fun y -> (sym_unwrap x ((show x) ^ "<=" ^ (show y))) <= (sym_unwrap y ((show x) ^ "<=" ^ (show y))))
+  let (>) = (fun x -> fun y -> (sym_unwrap x ((show x) ^ ">" ^ (show y))) > (sym_unwrap y ((show x) ^ ">" ^ (show y))))
+  let (>=) = (fun x -> fun y -> (sym_unwrap x ((show x) ^ ">=" ^ (show y))) >= (sym_unwrap y ((show x) ^ ">=" ^ (show y))))
+end *)
+
+
+class ( NumeralSym 'a ) 
+  val fromNumeralSym : numeral -> sym 'a 
+end
+
+instance (NumeralSym integer)
+  let fromNumeralSym = fun x -> Absolute (fromNumeral x)
+end
+
+instance (NumeralSym natural)
+  let fromNumeralSym = fun x -> Absolute (fromNumeral x)
+end
+
+instance forall 'a. NumeralSym 'a => (Numeral (sym 'a))
+  let fromNumeral = fromNumeralSym
+end
+
+val sym_eq : forall 'a. Eq 'a => sym 'a -> sym 'a -> bool
+let sym_eq a b = match (simplify a, simplify b) with
+| (Absolute x, Absolute y) -> x = y
+| (Offset (s,x), Offset (t, y)) -> s=t && x=y
+| _ -> Assert_extra.failwith "sym_eq"
+end
+
+
+let rec sym_integer_of_symbolic_expression x = match x with
+  | Section s -> Offset (s, 0)
+  | Const x -> Absolute x
+  | BinOp (x, Add, y) -> (sym_integer_of_symbolic_expression x) + (sym_integer_of_symbolic_expression y)
+  | BinOp (x, Sub, y) -> (sym_integer_of_symbolic_expression x) - (sym_integer_of_symbolic_expression y)
+  | AssertRange (x, _, _) -> sym_integer_of_symbolic_expression x (*TODO*)
+  | Mask (x, _, _) -> sym_integer_of_symbolic_expression x (*TODO*)
+end
+
+let sym_natural_of_symbolic_expression x =
+  match sym_integer_of_symbolic_expression x with
+  | Offset (s, x) -> Offset (s, partialNaturalFromInteger x)
+  | Absolute x -> Absolute (partialNaturalFromInteger x)
+  | Unknown -> Unknown
 end
 
 let sym_natural_land = sym_map2 natural_land
@@ -227,11 +314,29 @@ let symNaturalPow x y = sym_map (fun x -> naturalPow x y) x
 
 let symNaturalFromInteger x = Absolute(naturalFromInteger x)
 
+let index_sym_natural l n = index_natural l (sym_unwrap n "index_sym_natural")
+
+let partialSymNaturalFromInteger i = Absolute (partialNaturalFromInteger i)
+
+let sym_natural_nat_shift_left x sh = sym_map (fun x -> natural_nat_shift_left x sh) x
+let sym_natural_nat_shift_right x sh = sym_map (fun x -> natural_nat_shift_right x sh) x
+
 (* byte sequence *)
 
 type next_reloc =
   | NoReloc of natural
   | Reloc of abstract_relocation reloc_target_data
+
+let pp_relocs relocs =
+  let f = function
+  | NoReloc -> "NoReloc"
+  | Reloc x -> match x.arel_target with
+    | Data32 -> "Data32 "
+    | Data64 -> "Data64 "
+    end ^ pp_sym_expr x.arel_value
+  end in
+  "[" ^ String.concat "," (List.map f relocs) ^ "]"
+
 
 type rel_byte_sequence =
   <| rbs_bytes  : byte_sequence
@@ -247,6 +352,8 @@ let read_result_unwrap = function
   | ReadReloc _ -> Assert_extra.failwith "read_result_unwrap"
 end
 
+let rbs_length rbs = Byte_sequence.length rbs.rbs_bytes
+
 let rbs_no_reloc (bs : byte_sequence) : rel_byte_sequence =
   <| rbs_bytes = bs
    ; rbs_relocs = [NoReloc (Byte_sequence.length bs)] |>
@@ -254,8 +361,11 @@ let rbs_no_reloc (bs : byte_sequence) : rel_byte_sequence =
 let rbs_unwrap bs =
   match bs.rbs_relocs with
   | [NoReloc n] -> bs.rbs_bytes
-  | _ -> Assert_extra.failwith "rbs_unwrap: has relocations"
-end
+  | [] -> 
+    let _ = my_debug ("Bytes should be empty:" ^ (show bs.rbs_bytes)) in
+    bs.rbs_bytes
+  | x -> Assert_extra.failwith ("rbs_unwrap: has relocations " ^ (pp_relocs x))
+  end
 
 let rel_byte_sequence_of_byte_list l = rbs_no_reloc (byte_sequence_of_byte_list l)
 
@@ -266,6 +376,23 @@ let pad_no_reloc n rels =
   | NoReloc m :: rels -> NoReloc (n+m) :: rels
   | _ -> NoReloc n :: rels
 end
+
+(* TODO strict mode? *)
+val reloc_map_to_reloc_list' : Map.map elf64_addr (abstract_relocation reloc_target_data) -> natural -> natural -> list next_reloc
+let rec reloc_map_to_reloc_list' rels i l =
+  if i = l then
+    []
+  else
+    match Map.lookup (elf64_addr_of_natural i) rels with
+    | Nothing -> pad_no_reloc 1 (reloc_map_to_reloc_list' rels (i+1) l)
+    | Just x -> Reloc x :: reloc_map_to_reloc_list' rels (i + reloc_width_bytes x.arel_target) l
+    end
+
+let reloc_map_to_reloc_list rels l =
+  reloc_map_to_reloc_list' rels 0 l
+
+let construct_rel_byte_sequence bs rel =
+  <| rbs_bytes = bs ; rbs_relocs = reloc_map_to_reloc_list rel (Byte_sequence.length bs) |>
 
 let rbs_read_char bs =
   match bs.rbs_relocs with
@@ -319,8 +446,6 @@ let rbs_read_8_bytes_be bs =
         return (ReadReloc rel, <| rbs_bytes = bs' ; rbs_relocs = rels |>)
   | _ -> fail "rbs_read_8_bytes_be: has misaligned reloaction"
   end
-
-let rbs_length rbs = Byte_sequence.length rbs.rbs_bytes
 
 let rec reloc_list_partition n relocs = match (n, relocs) with
   | (0, relocs) -> return ([], relocs)
@@ -1050,37 +1175,6 @@ type inlined_subroutine_data_by_range = list inlined_subroutine_data_by_range_en
 
 
 
-
-
-
-
-(** ************************************************************ *)
-(** **  missing pervasives  ************************************ *)
-(** ************************************************************ *)
-
-(* sym_natural version of List.index *)
-val index_natural : forall 'a. list 'a -> natural -> maybe 'a
-let rec index_natural l n = match l with
-  | []      -> Nothing
-  | x :: xs -> if n = 0 then Just x else index_natural xs (n-1)
-end
-
-let partialNaturalFromInteger (i:integer) : natural =
- if i<0 then Assert_extra.failwith "partialNaturalFromInteger" else naturalFromInteger i
-
-val natural_nat_shift_left : natural -> nat -> natural
-declare ocaml    target_rep function natural_nat_shift_left = `Nat_big_num.shift_left`
-
-val natural_nat_shift_right : natural -> nat -> natural
-declare ocaml    target_rep function natural_nat_shift_right = `Nat_big_num.shift_right`
-
-let index_sym_natural l n = index_natural l (sym_unwrap n)
-
-let partialSymNaturalFromInteger i = Absolute (partialNaturalFromInteger i)
-
-let sym_natural_nat_shift_left x sh = sym_map (fun x -> natural_nat_shift_left x sh) x
-let sym_natural_nat_shift_right x sh = sym_map (fun x -> natural_nat_shift_right x sh) x
-
 (** ************************************************************ *)
 (** **  endianness       *************************************** *)
 (** ************************************************************ *)
@@ -1691,7 +1785,7 @@ let bytes_of_natural en size n =
   else
     Assert_extra.failwith "bytes_of_natural given size that is not 4 or 8")
 
-let bytes_of_sym_natural en size n = bytes_of_natural en (sym_unwrap size) (sym_unwrap n)
+let bytes_of_sym_natural en size n = bytes_of_natural en (sym_unwrap size "bytes_of_sym_natural size") (sym_unwrap n "bytes_of_sym_natural n")
 
 let rec natural_of_bytes_little bs : natural =
   match rbs_read_char bs with
@@ -1764,11 +1858,11 @@ let rec mytake' (n:natural) acc xs =
   end
 
 val mytake : forall 'a.  sym_natural -> (list 'a) -> maybe (list 'a * list 'a)
-let mytake n xs = mytake' (sym_unwrap n) [] xs
+let mytake n xs = mytake' (sym_unwrap n "mytake") [] xs
 
 val mynth : forall 'a.  sym_natural -> (list 'a) -> maybe 'a
 let rec mynth (n:sym_natural) xs =
-  match (sym_unwrap n,xs) with
+  match (sym_unwrap n "mynth",xs) with
   | (0, x::xs') -> Just x
   | (0, []) -> Nothing (*Assert_extra.failwith "mynth"*)
   | (_, x::xs') -> mynth (n-1) xs'
@@ -1792,7 +1886,8 @@ declare coq      target_rep function abs n = (`Zpred` (`Zpos` (`P_of_succ_nat` n
 
 let pphex_integer n = if n<0 then "-" ^ pphex (abs n) else pphex (abs n)
 
-let ppbytes bs = show (List.map (fun x -> show x) (byte_list_of_rel_byte_sequence bs))
+let ppbytes bs = show (List.map (fun x -> show x) (byte_list_of_byte_sequence bs.rbs_bytes))
+(* let ppbytes bs = show (List.map (fun x -> show x) (byte_list_of_rel_byte_sequence bs)) *)
 
 let rec ppbytes2 n bs =
   match rbs_read_char bs with
@@ -1823,14 +1918,14 @@ let just_one s xs =
 
 
 let max_address (as': sym_natural) : sym_natural =
-  match sym_unwrap as' with
+  match sym_unwrap as' "max_addres" with
   | 4 -> sym_natural_of_hex "0xffffffff"
   | 8 -> sym_natural_of_hex "0xffffffffffffffff"
   | _ -> Assert_extra.failwith "max_address size not 4 or 8"
   end
 
 let range_address (as': sym_natural) : sym_natural =
-  match sym_unwrap as' with
+  match sym_unwrap as' "max_addres" with
   | 4 -> sym_natural_of_hex "0x100000000"
   | 8 -> sym_natural_of_hex "0x10000000000000000"
   | _ -> Assert_extra.failwith "range_address size not 4 or 8"
@@ -2088,7 +2183,7 @@ let parse_demaybe s p =
 val parse_restrict_length : forall 'a. sym_natural -> parser 'a -> parser 'a
 let parse_restrict_length n p =
   fun pc ->
-    match rbs_partition (sym_unwrap n) pc.pc_bytes with
+    match rbs_partition (sym_unwrap n "parse_strict_length") pc.pc_bytes with
     | Fail _ -> Assert_extra.failwith "parse_restrict_length not given enough bytes"
     | Success (xs,ys) ->
         let pc' = <| pc_bytes = xs; pc_offset = pc.pc_offset |> in
@@ -2107,7 +2202,7 @@ let parse_byte : parser(byte) =
 
 let parse_n_bytes (n:sym_natural) : parser (rel_byte_sequence) =
   fun (pc:parse_context) ->
-    match rbs_partition (sym_unwrap n) pc.pc_bytes with
+    match rbs_partition (sym_unwrap n "parse_n_bytes") pc.pc_bytes with
       | Fail _ -> PR_fail ("parse_n_bytes n=" ^ pphex_sym n) pc
       | Success (xs,bs) ->
           PR_success xs (<|pc_bytes=bs; pc_offset= pc.pc_offset + (rbs_length xs) |> )
@@ -2171,12 +2266,17 @@ let parse_uint32 c : parser sym_natural=
     fun (pc:parse_context) ->
       let _ = my_debug "uint32 " in
       match rbs_read_4_bytes_be pc.pc_bytes with
-      | Success (ReadValue (b0,b1,b2,b3),bytes') -> (*TODO*)
+      | Success (ReadValue (b0,b1,b2,b3),bytes') ->
           let v = if c.endianness=Little then
             natural_of_byte b0 + 256*natural_of_byte b1 + 256*256*natural_of_byte b2 + 256*256*256*natural_of_byte b3
           else
             natural_of_byte b3 + 256*natural_of_byte b2 + 256*256*natural_of_byte b1 + 256*256*256*natural_of_byte b0 in
           PR_success (Absolute v) (<| pc_bytes = bytes'; pc_offset = pc.pc_offset + 4 |>)
+      | Success (ReadReloc r, bytes') ->
+          if r.arel_target = Data32 then
+            PR_success (sym_natural_of_symbolic_expression r.arel_value) (<| pc_bytes = bytes'; pc_offset = pc.pc_offset + 4 |>)
+          else
+            PR_fail "parse_uint32 wrong relocation type" pc
       | _ -> PR_fail "parse_uint32 not given enough bytes" pc
       end
 
@@ -2194,6 +2294,11 @@ let parse_uint64 c : parser sym_natural=
               + (256*256*256*256*(natural_of_byte b3 + 256*natural_of_byte b2 + 256*256*natural_of_byte b1 + 256*256*256*natural_of_byte b0))
           in
           PR_success (Absolute v) (<| pc_bytes = bytes'; pc_offset = pc.pc_offset + 8 |>)
+      | Success (ReadReloc r, bytes') ->
+        if r.arel_target = Data64 then
+          PR_success (sym_natural_of_symbolic_expression r.arel_value) (<| pc_bytes = bytes'; pc_offset = pc.pc_offset + 8 |>)
+        else
+          PR_fail "parse_uint64 wrong relocation type" pc
       | _ -> PR_fail "parse_uint64 not given enough bytes" pc
       end
 
@@ -2209,16 +2314,16 @@ let partialTwosComplementNaturalFromInteger (i:integer) (half: natural) (all:int
 let partialTwosComplementSymNaturalFromInteger i half all = sym_map (fun x -> partialTwosComplementNaturalFromInteger i x all) half
 
 let parse_sint8 : parser integer =
-  pr_post_map (parse_uint8) (fun n -> integerFromTwosComplementNatural (sym_unwrap n) 128 256)
+  pr_post_map (parse_uint8) (fun n -> integerFromTwosComplementNatural (sym_unwrap n "parse_sint8") 128 256)
 
 let parse_sint16 c : parser integer =
-  pr_post_map (parse_uint16 c) (fun n -> integerFromTwosComplementNatural (sym_unwrap n) (128*256) (256*256))
+  pr_post_map (parse_uint16 c) (fun n -> integerFromTwosComplementNatural (sym_unwrap n "parse_sint16") (128*256) (256*256))
 
 let parse_sint32 c : parser integer =
-  pr_post_map (parse_uint32 c) (fun n -> integerFromTwosComplementNatural (sym_unwrap n) (128*256*256*256) (256*256*256*256))
+  pr_post_map (parse_uint32 c) (fun n -> integerFromTwosComplementNatural (sym_unwrap n "parse_sint32") (128*256*256*256) (256*256*256*256))
 
 let parse_sint64 c : parser integer =
-  pr_post_map (parse_uint64 c) (fun n -> integerFromTwosComplementNatural (sym_unwrap n) (128*256*256*256*256*256*256*256) (256*256*256*256*256*256*256*256))
+  pr_post_map (parse_uint64 c) (fun n -> integerFromTwosComplementNatural (sym_unwrap n "parse_sint64") (128*256*256*256*256*256*256*256) (256*256*256*256*256*256*256*256))
 
 let rec parse_ULEB128' (acc: natural) (shift_factor: natural) : parser natural =
     fun (pc:parse_context) ->
@@ -2281,14 +2386,14 @@ let parse_uintDwarfN c (df: dwarf_format) : parser sym_natural =
    end
 
 let parse_uint_address_size c (as': sym_natural) : parser sym_natural =
-    match sym_unwrap as' with
+    match sym_unwrap as' "parse_uint_address_size" with
     | 4 -> (parse_uint32 c)
     | 8 -> (parse_uint64 c)
     | _ -> Assert_extra.failwith ("cuh_address_size not 4 or 8: " ^ show as')
     end
 
 let parse_uint_segment_selector_size c (ss: sym_natural) : parser (maybe sym_natural) =
-    match sym_unwrap ss with
+    match sym_unwrap ss "parse_uint_segment_selector_size_size" with
     | 0 -> pr_return Nothing
     | 1 -> pr_post_map (parse_uint8)    (fun n -> Just n)
     | 2 -> pr_post_map (parse_uint16 c) (fun n -> Just n)
@@ -2384,7 +2489,7 @@ let rec null_terminated_bs (bs: rel_byte_sequence) : rel_byte_sequence =
   end
 
 let pp_debug_str_entry (str: rel_byte_sequence) (n: sym_natural) : string =
-  match rbs_dropbytes (sym_unwrap n) str with
+  match rbs_dropbytes (sym_unwrap n "pp_debug_str_entry") str with
   | Fail _ -> "strp beyond .debug_str extent"
   | Success bs -> string_of_rel_byte_sequence (null_terminated_bs bs)
   end
@@ -3072,11 +3177,11 @@ let pp_die_abbrev_var_parents c d cu str parents =
 val parse_die : p_context -> rel_byte_sequence -> compilation_unit_header -> (sym_natural->abbreviation_declaration) -> parser (maybe die)
 let rec parse_die c str cuh find_abbreviation_declaration =
   fun (pc: parse_context) ->
-    (* let _ = my_debug3 ("parse_die called at " ^ pp_parse_context pc ^ "\n") in *)
+    let _ = my_debug3 ("parse_die called at " ^ pp_parse_context pc ^ "\n") in
     pr_bind (parse_ULEB128 pc) (fun abbreviation_code pc' ->
       if abbreviation_code = 0 then PR_success Nothing pc'
       else
-        (* let _ = my_debug3 ("parse_die abbreviation code "^pphex abbreviation_code ^"\n") in *)
+        let _ = my_debug3 ("parse_die abbreviation code "^pphex_sym abbreviation_code ^"\n") in
         let ad = find_abbreviation_declaration abbreviation_code in
         let attribute_value_parsers = List.map (fun (at,af) -> pr_with_pos (parser_of_attribute_form c cuh af)) ad.ad_attribute_specifications in
         pr_bind (parse_parser_list attribute_value_parsers pc') (fun avs pc'' ->
@@ -3157,7 +3262,7 @@ let _ = my_debug4 (pp_compilation_unit_header cuh) in
 
       if cuh.cuh_unit_length = 0 then PR_success Nothing pc' else
       
-      let pc_abbrev = <|pc_bytes = match rbs_dropbytes (sym_unwrap cuh.cuh_debug_abbrev_offset) debug_abbrev_section_body with Success bs -> bs | Fail _ -> Assert_extra.failwith "mydrop of debug_abbrev" end; pc_offset = sym_unwrap cuh.cuh_debug_abbrev_offset  |> in
+      let pc_abbrev = <|pc_bytes = match rbs_dropbytes (sym_unwrap cuh.cuh_debug_abbrev_offset "mydrop of pc_abbrev") debug_abbrev_section_body with Success bs -> bs | Fail _ -> Assert_extra.failwith "mydrop of debug_abbrev" end; pc_offset = sym_unwrap cuh.cuh_debug_abbrev_offset "mydrop of pc_abbrev"|> in
 
       (* todo: this is reparsing the abbreviations table for each cu *)
       let abbreviations_table =
@@ -3166,13 +3271,13 @@ let _ = my_debug4 (pp_compilation_unit_header cuh) in
         | PR_success at pc_abbrev' -> <| at_offset=Absolute pc_abbrev.pc_offset; at_table= at|>
         end in
 
-      (* let _ = my_debug4 (pp_abbreviations_table abbreviations_table) in *)
+      let _ = my_debug4 (pp_abbreviations_table abbreviations_table) in
 
       let find_abbreviation_declaration (ac:sym_natural) : abbreviation_declaration =
         (* let _ = my_debug4 ("find_abbreviation_declaration "^pphex ac) in *)
-        myfindNonPure (fun ad -> ad.ad_abbreviation_code = ac) abbreviations_table.at_table  in
+        myfindNonPure (fun ad -> sym_eq ad.ad_abbreviation_code ac) abbreviations_table.at_table  in
 
-      (* let _ = my_debug3 (pp_abbreviations_table abbreviations_table) in *)
+      let _ = my_debug3 (pp_abbreviations_table abbreviations_table) in
 
       match parse_die c debug_str_section_body cuh find_abbreviation_declaration pc' with
       | PR_fail s pc'' -> Assert_extra.failwith ("parse_die fail: " ^ pp_parse_fail s pc'')
@@ -3217,7 +3322,7 @@ let parse_type_unit c (debug_str_section_body: rel_byte_sequence) (debug_abbrev_
 
       (* let _ = my_debug4 (pp_type_unit_header tuh) in *)
 
-      let pc_abbrev = let n = tuh.tuh_cuh.cuh_debug_abbrev_offset in <|pc_bytes = match rbs_dropbytes (sym_unwrap n) debug_abbrev_section_body with Success bs -> bs | Fail _ -> Assert_extra.failwith "mydrop of debug_abbrev" end; pc_offset = sym_unwrap n  |> in
+      let pc_abbrev = let n = tuh.tuh_cuh.cuh_debug_abbrev_offset in <|pc_bytes = match rbs_dropbytes (sym_unwrap n "mydrop of pc_abbrev") debug_abbrev_section_body with Success bs -> bs | Fail _ -> Assert_extra.failwith "mydrop of debug_abbrev" end; pc_offset = sym_unwrap n "mydrop of pc_abbrev" |> in
 
       let abbreviations_table =
         match parse_abbreviations_table c pc_abbrev with
@@ -3229,7 +3334,7 @@ let parse_type_unit c (debug_str_section_body: rel_byte_sequence) (debug_abbrev_
 
       let find_abbreviation_declaration (ac:sym_natural) : abbreviation_declaration =
         (* let _ = my_debug4 ("find_abbreviation_declaration "^pphex ac) in *)
-        myfindNonPure (fun ad -> ad.ad_abbreviation_code = ac) abbreviations_table.at_table  in
+        myfindNonPure (fun ad -> sym_eq ad.ad_abbreviation_code ac) abbreviations_table.at_table  in
 
       (* let _ = my_debug3 (pp_abbreviations_table abbreviations_table) in *)
 
@@ -3343,7 +3448,7 @@ let parse_location_list_list c cuh : parser location_list_list =
     parse_list (parse_location_list c cuh)
 
 let find_location_list dloc n : location_list =
-  myfindNonPure (fun (n',_)-> n'=n) dloc
+  myfindNonPure (fun (n',_)-> sym_eq n' n) dloc
   (* fails if location list not found *)
 
 (* interpretation of a location list applies the base_address and LLI_base offsets to give a list indexed by concrete address ranges *)
@@ -3446,7 +3551,7 @@ let parse_range_list_list c cuh : parser range_list_list =
     pr_map2 List.concat (parse_list (parse_range_list c cuh))
 
 let find_range_list dranges n : maybe range_list =
-  List.find (fun (n',_)-> n'=n) dranges
+  List.find (fun (n',_)-> sym_eq n' n) dranges
   (* fails if range list not found *)
 
 (* interpretation of a range list applies the base_address and RLI_base offsets to give a list of concrete address ranges *)
@@ -3688,7 +3793,7 @@ let rec find_cie fi cie_id =
   match fi with
   | [] -> Assert_extra.failwith "find_cie: cie_id not found"
   | FIE_fde _ :: fi' -> find_cie fi' cie_id
-  | FIE_cie cie :: fi' -> if cie_id = cie.cie_offset then cie else find_cie fi' cie_id
+  | FIE_cie cie :: fi' -> if sym_eq cie_id cie.cie_offset then cie else find_cie fi' cie_id
   end
 
 let parse_initial_location c cuh mss mas' : parser ((maybe sym_natural) * sym_natural) = (*(segment selector and target address)*)
@@ -4053,7 +4158,7 @@ let line_number_offset_of_compilation_unit c cu =
 let line_number_program_of_compilation_unit d cu =
   let c = p_context_of_d d in
   let offset = line_number_offset_of_compilation_unit c cu in
-  match List.find (fun lnp -> lnp.lnp_header.lnh_offset = offset) d.d_line_info with
+  match List.find (fun lnp -> sym_eq lnp.lnp_header.lnh_offset offset) d.d_line_info with
   | Nothing -> Assert_extra.failwith "compilation unit line number offset not found"
   | Just lnp ->lnp
   end
@@ -4117,7 +4222,7 @@ let parse_line_number_info c str (d_line: rel_byte_sequence) (cu: compilation_un
         lnp
     | PR_fail s pc' -> Assert_extra.failwith ("parse_line_number_header failed: " ^ s)
     end in
-  f (sym_unwrap (line_number_offset_of_compilation_unit c cu))
+  f (sym_unwrap (line_number_offset_of_compilation_unit c cu) "parse_line_number_info")
 
 let parse_line_number_infos c str debug_line_section_body compilation_units
     =
@@ -4187,7 +4292,7 @@ let parse_dwarf c
     | PR_success cus pc_info' -> cus
     end in
 
-  (*let _ = my_debug5 (pp_compilation_units c debug_str_section_body compilation_units) in*)
+  let _ = my_debug5 (pp_compilation_units c false debug_str_section_body compilation_units) in
 
 
 (* the DWARF4 spec doesn't seem to specify the address size used in the .debug_loc section, so we (hackishly) take it from the first compilation unit *)
@@ -4212,7 +4317,7 @@ let parse_dwarf c
   let pc_frame = <|pc_bytes = debug_frame_section_body; pc_offset = 0  |> in
 
   let fi =
-    (* let _ = my_debug5 ("debug_frame_section_body:\n" ^ ppbytes2 0 debug_frame_section_body) in *)
+    let _ = my_debug5 ("debug_frame_section_body:\n" ^ ppbytes2 0 debug_frame_section_body) in
 
     match parse_frame_info c cuh_default pc_frame with
     | PR_fail s pc_info' ->  Assert_extra.failwith ("parse_frame_info: " ^ pp_parse_fail s pc_info')
@@ -4233,8 +4338,8 @@ let parse_dwarf c
   |>
 
 (* TODO *)
-val extract_section_body' : elf_file -> string -> bool -> p_context * sym_natural * byte_sequence
-let extract_section_body' (f:elf_file) (section_name:string) (strict: bool) =
+val extract_section_body : elf_file -> relocation_interpreter reloc_target_data -> string -> bool -> p_context * sym_natural * rel_byte_sequence
+let extract_section_body (f:elf_file) (ri:relocation_interpreter reloc_target_data) (section_name:string) (strict: bool) =
   let (en: Endianness.endianness) =
     match f with
     | ELF_File_32 f32 -> Elf_header.get_elf32_header_endianness f32.Elf_file.elf32_file_header
@@ -4250,16 +4355,17 @@ let extract_section_body' (f:elf_file) (section_name:string) (strict: bool) =
           ) f32.elf32_file_interpreted_sections in
       match sections with
       | [section] ->
-          let section_addr = Absolute section.Elf_interpreted_section.elf32_section_addr in (*TODO symbolic*)
+          let section_addr = Offset (section_name, 0) in
           let section_body = section.Elf_interpreted_section.elf32_section_body in
           (* let _ = my_debug4 (section_name ^ (": \n" ^ (Elf_interpreted_section.string_of_elf32_interpreted_section section ^ "\n"
            *                ^ "  body = " ^ ppbytes2 0 section_body ^ "\n"))) in *)
+          let section_body = Assert_extra.failwith "Not implemented" in
           (c,section_addr,section_body)
       | [] ->
           if strict then
             Assert_extra.failwith ("" ^ section_name ^ " section not present")
           else
-            (c,0,Byte_sequence.empty)
+            (c,0,<| rbs_bytes = Byte_sequence.empty ; rbs_relocs = [] |>)
       | _ -> Assert_extra.failwith ("multiple " ^ section_name ^ " sections present")
       end
 
@@ -4272,38 +4378,44 @@ let extract_section_body' (f:elf_file) (section_name:string) (strict: bool) =
           ) f64.elf64_file_interpreted_sections in
       match sections with
       | [section] ->
-          let section_addr = Absolute section.Elf_interpreted_section.elf64_section_addr in (*TODO symbolic*)
+          let section_addr = Offset (section_name, 0) in
           let section_body = section.Elf_interpreted_section.elf64_section_body in
-          (c,section_addr,section_body)
+          let _ = my_debug "extracted section body" in
+          match extract_elf64_relocations_for_section f64 ri section_name with
+          | Success relocations ->
+              let _ = my_debug "extracted relocations" in
+              let section_body = construct_rel_byte_sequence section_body relocations in
+              (c,section_addr,section_body)
+          | Fail err -> Assert_extra.failwith ("failed extracting relocations: " ^ err)
+          end
       | [] ->
           if strict then
             Assert_extra.failwith ("" ^ section_name ^ " section not present")
           else
-            (c,0,Byte_sequence.empty)
+            (c,0,<| rbs_bytes = Byte_sequence.empty ; rbs_relocs = [] |>)
       | _ -> Assert_extra.failwith ("multiple " ^ section_name ^ " sections present")
       end
   end
 
-val extract_section_body : elf_file -> string -> bool -> p_context * sym_natural * rel_byte_sequence
-let extract_section_body (f:elf_file) (section_name:string) (strict: bool) =
-  let (c,n,bs) = extract_section_body' f section_name strict in (c,n,rbs_no_reloc bs)
 
-val extract_dwarf : elf_file -> maybe dwarf
-let extract_dwarf f =
-  let (c, _, debug_info_section_body)   = extract_section_body f ".debug_info"   true  in
-  let (c, _, debug_abbrev_section_body) = extract_section_body f ".debug_abbrev" false in
-  let (c, _, debug_str_section_body)    = extract_section_body f ".debug_str"    false in
-  let (c, _, debug_loc_section_body)    = extract_section_body f ".debug_loc"    false in
-  let (c, _, debug_ranges_section_body) = extract_section_body f ".debug_ranges" false in
-  let (c, _, debug_frame_section_body)  = extract_section_body f ".debug_frame" false in
-  let (c, _, debug_line_section_body)   = extract_section_body f ".debug_line" false in
+val extract_dwarf : elf_file -> relocation_interpreter reloc_target_data -> maybe dwarf
+let extract_dwarf f ri =
+  let _ = my_debug "extract dwarf" in
+
+  let (c, _, debug_info_section_body)   = extract_section_body f ri ".debug_info"   true  in
+  let (c, _, debug_abbrev_section_body) = extract_section_body f ri ".debug_abbrev" false in
+  let (c, _, debug_str_section_body)    = extract_section_body f ri ".debug_str"    false in
+  let (c, _, debug_loc_section_body)    = extract_section_body f ri ".debug_loc"    false in
+  let (c, _, debug_ranges_section_body) = extract_section_body f ri ".debug_ranges" false in
+  let (c, _, debug_frame_section_body)  = extract_section_body f ri ".debug_frame" false in
+  let (c, _, debug_line_section_body)   = extract_section_body f ri ".debug_line" false in
 
   let d = parse_dwarf c debug_info_section_body debug_abbrev_section_body debug_str_section_body debug_loc_section_body debug_ranges_section_body debug_frame_section_body debug_line_section_body in
 
   Just d
 
-val extract_text : elf_file -> p_context * sym_natural * rel_byte_sequence  (* (p_context, elf32/64_section_addr, elf32/64_section_body) *)
-let extract_text f = extract_section_body f ".text" true 
+val extract_text : elf_file -> relocation_interpreter reloc_target_data -> p_context * sym_natural * rel_byte_sequence  (* (p_context, elf32/64_section_addr, elf32/64_section_body) *)
+let extract_text f ri = extract_section_body f ri ".text" true 
 
 
 (** ************************************************************ *)
@@ -4422,7 +4534,7 @@ accumulated so far *)
 
 
 let arithmetic_context_of_cuh cuh =
-  match sym_unwrap cuh.cuh_address_size with
+  match sym_unwrap cuh.cuh_address_size "arithmetic_context_of_cuh" with
   | 8 ->
       <|
       ac_bitwidth = 64;
@@ -5314,7 +5426,7 @@ let analyse_locations_raw c (d: dwarf) =
              die.die_abbreviation_declaration.ad_attribute_specifications
              die.die_attribute_values in
 
-         let find_ats (s:string) = myfindNonPure (fun  (((at: sym_natural), (af: sym_natural)), ((pos: sym_natural),(av:attribute_value))) -> attribute_encode s = at) ats in
+         let find_ats (s:string) = myfindNonPure (fun  (((at: sym_natural), (af: sym_natural)), ((pos: sym_natural),(av:attribute_value))) -> sym_eq (attribute_encode s) at) ats in
 
          let ((_,_),(_,av_name)) = find_ats "DW_AT_name" in
 
@@ -5333,7 +5445,7 @@ let analyse_locations_raw c (d: dwarf) =
            | AV_exprloc n bs -> "    "^parse_and_pp_operations c cuh_default bs^"\n"
            | AV_block n bs -> "    "^parse_and_pp_operations c cuh_default bs^"\n"
            | AV_sec_offset n ->
-               let location_list = myfindNonPure (fun (n',_)-> n'=n) d.d_loc in
+               let location_list = myfindNonPure (fun (n',_)-> sym_eq n' n) d.d_loc in
                pp_location_list c cuh_default location_list
            | _ -> "av_location AV not understood"
            end in
@@ -6005,7 +6117,7 @@ let evaluate_line_number_program
 let evaluated_line_info_of_compilation_unit d cu evaluated_line_info =
   let c = p_context_of_d d in
   let offset = line_number_offset_of_compilation_unit c cu in
-  match List.find (fun (lnh,lnrs) -> lnh.lnh_offset = offset) evaluated_line_info with
+  match List.find (fun (lnh,lnrs) -> sym_eq lnh.lnh_offset offset) evaluated_line_info with
   | Nothing -> Assert_extra.failwith "compilation unit line number offset not found"
   | Just (lnh,lnrs) ->lnrs
   end
@@ -6103,12 +6215,12 @@ let source_lines_of_address (ds:dwarf_static) (a: sym_natural) : list ( unpacked
 (** **  collecting all the statically calculated analysis info   *)
 (** ************************************************************ *)
 
-val extract_dwarf_static : elf_file -> maybe dwarf_static
-let extract_dwarf_static f1 =
-  match extract_dwarf f1 with
+val extract_dwarf_static : elf_file -> relocation_interpreter reloc_target_data -> maybe dwarf_static
+let extract_dwarf_static f1 ri =
+  match extract_dwarf f1 ri with
   | Nothing -> Nothing
   | Just dwarf ->
-     (*let _ = my_debug5 (pp_dwarf dwarf) in *)
+     let _ = my_debug5 (pp_dwarf dwarf) in
 
       let ald : analysed_location_data =
         analyse_locations dwarf in
@@ -6680,11 +6792,11 @@ let rec words_of_rel_byte_sequence (addr:sym_natural) (bs:rel_byte_sequence) (ac
   end
 
 let pp_instruction ((addr:sym_natural),(i:sym_natural)) =
-  hex_string_of_big_int_pad8 (sym_unwrap addr) ^ "  " ^ hex_string_of_big_int_pad8 (sym_unwrap i) ^ "\n"
+  hex_string_of_big_int_pad8 (sym_unwrap addr "pp_instruction") ^ "  " ^ hex_string_of_big_int_pad8 (sym_unwrap i "pp_instruction") ^ "\n"
   
-val pp_text_section : elf_file -> string
-let pp_text_section f =
-  let (p_context, addr, bs) = extract_text f in
+val pp_text_section : elf_file -> relocation_interpreter reloc_target_data -> string
+let pp_text_section f ri =
+  let (p_context, addr, bs) = extract_text f ri in
   let instructions : list (sym_natural * sym_natural) = words_of_rel_byte_sequence addr bs [] in
   String.concat "" (List.map pp_instruction instructions)  
 
@@ -6692,9 +6804,9 @@ let pp_text_section f =
 (** **  top level for main_elf  ******************************** *)
 (** ************************************************************ *)
 
-val harness_string_of_elf_like_objdump : elf_file -> rel_byte_sequence -> string
-let harness_string_of_elf_like_objdump f1 bs =
-  let mds = extract_dwarf_static f1 in
+val harness_string_of_elf_like_objdump : elf_file -> relocation_interpreter reloc_target_data -> string
+let harness_string_of_elf_like_objdump f1 ri =
+  let mds = extract_dwarf_static f1 ri in
   match mds with
   | Nothing -> "<no dwarf information extracted>"
   | Just ds ->
@@ -6703,9 +6815,9 @@ let harness_string_of_elf_like_objdump f1 bs =
   end
 
     
-val harness_string_of_elf : elf_file -> rel_byte_sequence -> string
-let harness_string_of_elf f1 bs =
-let mds = extract_dwarf_static f1 in
+val harness_string_of_elf : elf_file -> relocation_interpreter reloc_target_data -> string
+let harness_string_of_elf f1 ri =
+let mds = extract_dwarf_static f1 ri in
   match mds with
   | Nothing -> "<no dwarf information extracted>"
   | Just ds ->
@@ -6741,22 +6853,22 @@ let mds = extract_dwarf_static f1 in
 end
 
 
-val harness_string_of_elf64_debug_info_section : elf64_file -> rel_byte_sequence -> (*(sym_natural -> string) -> (sym_natural -> string) -> (sym_natural -> string) -> elf64_header -> elf64_section_header_table -> string_table -> *) string
-let {ocaml} harness_string_of_elf64_debug_info_section f1 bs0 (*os proc usr hdr sht stbl*) =
-  harness_string_of_elf (ELF_File_64 f1) bs0
+val harness_string_of_elf64_debug_info_section : elf64_file -> relocation_interpreter reloc_target_data -> (*(sym_natural -> string) -> (sym_natural -> string) -> (sym_natural -> string) -> elf64_header -> elf64_section_header_table -> string_table -> *) string
+let {ocaml} harness_string_of_elf64_debug_info_section f1 (*os proc usr hdr sht stbl*) =
+  harness_string_of_elf (ELF_File_64 f1)
 
-val harness_string_of_elf32_debug_info_section : elf32_file -> rel_byte_sequence -> (* (sym_natural -> string) -> (sym_natural -> string) -> (sym_natural -> string) -> elf32_header -> elf32_section_header_table -> string_table ->*) string
-let {ocaml} harness_string_of_elf32_debug_info_section f1 bs0 (*os proc usr hdr sht stbl*) =
-  harness_string_of_elf (ELF_File_32 f1) bs0
+val harness_string_of_elf32_debug_info_section : elf32_file -> relocation_interpreter reloc_target_data -> (* (sym_natural -> string) -> (sym_natural -> string) -> (sym_natural -> string) -> elf32_header -> elf32_section_header_table -> string_table ->*) string
+let {ocaml} harness_string_of_elf32_debug_info_section f1 (*os proc usr hdr sht stbl*) =
+  harness_string_of_elf (ELF_File_32 f1)
 
 
 
-val harness_string_of_elf64_like_objdump : elf64_file -> rel_byte_sequence -> (*(sym_natural -> string) -> (sym_natural -> string) -> (sym_natural -> string) -> elf64_header -> elf64_section_header_table -> string_table -> *) string
-let {ocaml} harness_string_of_elf64_like_objdump f1 bs0 (*os proc usr hdr sht stbl*) =
-  harness_string_of_elf_like_objdump (ELF_File_64 f1) bs0
+val harness_string_of_elf64_like_objdump : elf64_file -> relocation_interpreter reloc_target_data -> (*(sym_natural -> string) -> (sym_natural -> string) -> (sym_natural -> string) -> elf64_header -> elf64_section_header_table -> string_table -> *) string
+let {ocaml} harness_string_of_elf64_like_objdump f1 (*os proc usr hdr sht stbl*) =
+  harness_string_of_elf_like_objdump (ELF_File_64 f1)
 
-val harness_string_of_elf32_like_objdump : elf32_file -> rel_byte_sequence -> (* (sym_natural -> string) -> (sym_natural -> string) -> (sym_natural -> string) -> elf32_header -> elf32_section_header_table -> string_table ->*) string
-let {ocaml} harness_string_of_elf32_like_objdump f1 bs0 (*os proc usr hdr sht stbl*) =
-  harness_string_of_elf_like_objdump (ELF_File_32 f1) bs0
+val harness_string_of_elf32_like_objdump : elf32_file -> relocation_interpreter reloc_target_data -> (* (sym_natural -> string) -> (sym_natural -> string) -> (sym_natural -> string) -> elf32_header -> elf32_section_header_table -> string_table ->*) string
+let {ocaml} harness_string_of_elf32_like_objdump f1 (*os proc usr hdr sht stbl*) =
+  harness_string_of_elf_like_objdump (ELF_File_32 f1)
 
     

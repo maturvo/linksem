@@ -30,3 +30,5 @@ src/build_num
 src/build_zarith
 src/_build
 src/byte_sequence_impl.lem
+
+_opam

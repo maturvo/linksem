@@ -3,6 +3,13 @@ open import Num
 open import Error
 open import Byte_sequence
 open import Bool
+open import Maybe
+open import String
+open import Show
+
+(* TODO for debugging, remove *)
+val print_endline : string -> unit
+declare ocaml target_rep function print_endline = `print_endline`
 
 
 open import Elf_types_native_uint
@@ -11,6 +18,7 @@ open import Elf_symbol_table
 open import Elf_file
 open import Elf_header
 open import Elf_section_header_table
+open import Elf_interpreted_section
 
 (* TODO *)
 type binary_operation
@@ -19,13 +27,29 @@ type binary_operation
 
 (* TODO *)
 type symbolic_expression
-  = Section of elf64_half
+  = Section of string
   | Const of integer
   | BinOp of (symbolic_expression * binary_operation * symbolic_expression)
   | AssertRange of (symbolic_expression * integer * integer)
   | Mask of (symbolic_expression * natural * natural)
 
-let section_with_offset sidx offset = BinOp(Section sidx, Add, Const (integerFromNatural (natural_of_elf64_addr offset)))
+let rec pp_sym_expr sx = match sx with
+  | Section s -> s
+  | Const x -> show x
+  | BinOp (a, Add, b) -> "(" ^ (pp_sym_expr a) ^ "+" ^ (pp_sym_expr b) ^ ")"
+  | AssertRange (x, a, b) -> pp_sym_expr x ^ "!" (*TODO*)
+  | Mask (x, a, b) -> pp_sym_expr x ^ "[" ^ (show a) ^ ":" ^ (show b) ^ "]"
+end
+
+val section_with_offset : elf64_file -> elf64_half -> elf64_addr -> error symbolic_expression
+let section_with_offset f sidx offset =
+  match List.index f.elf64_file_interpreted_sections (natFromNatural (natural_of_elf64_half sidx)) with
+  | Nothing -> fail ("Invalid secion id " ^ show sidx)
+  | Just sec -> return (BinOp(Section sec.elf64_section_name_as_string, Add, Const (integerFromNatural (natural_of_elf64_addr offset))))
+end
+
+let symbolic_address_from_elf64_symbol_table_entry f ste =
+  section_with_offset f ste.elf64_st_shndx ste.elf64_st_value
 
 type abstract_relocation 'a =
   <| arel_value  : symbolic_expression
@@ -41,30 +65,53 @@ let reloc_width_bytes : reloc_target_data -> natural = function
   | Data64 -> 8
 end
 
-type relocation_interpreter 'a = elf64_file -> elf64_symbol_table -> elf64_half -> elf64_relocation_a -> error (Map.map elf64_addr (abstract_relocation 'a))
+type relocation_interpreter 'a = elf64_file -> Map.map natural elf64_symbol_table_entry -> elf64_half -> elf64_relocation_a -> error (Map.map elf64_addr (abstract_relocation 'a))
 
-val extract_elf64_relocations_for_section : forall 'a. elf64_file -> relocation_interpreter 'a -> elf64_half -> byte_sequence -> error (Map.map elf64_addr (abstract_relocation 'a))
-let extract_elf64_relocations_for_section f1 interp sidx bs0 =
+val symbol_map_from_elf64_symtab : elf64_file -> elf64_symbol_table -> Map.map natural elf64_symbol_table_entry
+let symbol_map_from_elf64_symtab f symtab =
+  let convert i ste =
+    (naturalFromNat i, ste)
+  in
+  let indexed_list = List.mapi convert symtab in
+  Map.fromList indexed_list
+
+val extract_elf64_relocations_for_section' : forall 'a. elf64_file -> relocation_interpreter 'a -> elf64_half -> error (Map.map elf64_addr (abstract_relocation 'a))
+let extract_elf64_relocations_for_section' f1 interp sidx =
   let hdr       = f1.elf64_file_header in
-  let sht       = f1.elf64_file_section_header_table in
+  let sections   = f1.elf64_file_interpreted_sections in
   let endian    = get_elf64_header_endianness hdr in
   let cond x =
-    (x.elf64_sh_type = elf64_word_of_natural sht_rela) && (natural_of_elf64_word x.elf64_sh_info = natural_of_elf64_half sidx)
+    (x.elf64_section_type = sht_rela) && (x.elf64_section_info = natural_of_elf64_half sidx)
   in
-  match List.filter cond sht with
+  match List.filter cond sections with
   | [] -> return Map.empty
   | [rel_sec] ->
-    let off = natural_of_elf64_off  rel_sec.elf64_sh_offset in
-    let siz = natural_of_elf64_xword rel_sec.elf64_sh_size in
-    let lnk = natural_of_elf64_word rel_sec.elf64_sh_link in
-    Byte_sequence.offset_and_cut off siz bs0 >>= fun rels ->
+    let lnk = rel_sec.elf64_section_link in
+    let rels = rel_sec.elf64_section_body in
     Elf_relocation.read_elf64_relocation_a_section' endian rels >>= fun rels ->
     Elf_file.get_elf64_symbol_table_by_index f1 lnk >>= fun symtab ->
-    mapM (interp f1 symtab sidx) rels >>= fun rel_maps ->
-    let rel_map = Map.unions rel_maps in
+    let symtab_map = symbol_map_from_elf64_symtab f1 symtab in
+    let _ = print_endline "symtab_map generated" in
+    mapM (interp f1 symtab_map sidx) rels >>= fun rel_maps ->
+    let _ = print_endline "relocations computed" in
+    let rel_map = Map.fromList (List.concatMap Map_extra.toList rel_maps) in
+    let _ = print_endline "why is this slow?" in
     if Map.size rel_map <> List.length rels then
       fail "Multiple relocations at the same location"
     else
       return rel_map
   | _ -> fail "Multiple relocation sections for this section"
+end
+
+val extract_elf64_relocations_for_section : forall 'a. elf64_file -> relocation_interpreter 'a -> string -> error (Map.map elf64_addr (abstract_relocation 'a))
+let extract_elf64_relocations_for_section f1 interp section_name =
+  match List.findIndices
+    (fun x -> x.elf64_section_name_as_string = section_name)
+    f1.elf64_file_interpreted_sections
+  with
+  | [sidx] -> 
+    let sidx = elf64_half_of_natural (naturalFromNat sidx) in
+    extract_elf64_relocations_for_section' f1 interp sidx
+  | [] -> fail ("" ^ section_name ^ " section not present")
+  | _ -> fail ("multiple " ^ section_name ^ " sections present")
 end
