@@ -4339,7 +4339,6 @@ let parse_dwarf c
    d_line_info = li;
   |>
 
-(* TODO *)
 val extract_section_body : elf_file -> relocation_interpreter reloc_target_data -> string -> bool -> p_context * sym_natural * rel_byte_sequence
 let extract_section_body (f:elf_file) (ri:relocation_interpreter reloc_target_data) (section_name:string) (strict: bool) =
   let (en: Endianness.endianness) =
@@ -4399,6 +4398,10 @@ let extract_section_body (f:elf_file) (ri:relocation_interpreter reloc_target_da
       end
   end
 
+let extract_section_body_without_relocations f section_name strict =
+  let err_on_relocation ef symtab_map sidx rel = Assert_extra.failwith "Relocation found while extracting a section without relocations" in
+  let (c, addr, body) = extract_section_body f err_on_relocation section_name strict in
+  (c, sym_unwrap addr "", rbs_unwrap body)
 
 val extract_dwarf : elf_file -> relocation_interpreter reloc_target_data -> maybe dwarf
 let extract_dwarf f ri =
